@@ -1,0 +1,12 @@
+cat > .gitignore << 'EOF'
+target/
+*.class
+node_modules/
+dist/
+build/
+.env
+.idea/
+.vscode/
+*.iml
+storage/
+EOF
