@@ -19,6 +19,8 @@ public class NodeController {
 
     public record RegisterRequest(String nodeId, String host, int port) {}
 
+    public record HeartbeatRequest(long freeStorage, int chunkCount) {}
+
     @PostMapping("/register")
     public NodeEntity register(@RequestBody RegisterRequest request) {
         NodeEntity node = nodeRepository.findById(request.nodeId())
@@ -33,8 +35,20 @@ public class NodeController {
         return nodeRepository.save(node);
     }
 
+    @PostMapping("/{id}/heartbeat")
+    public NodeEntity heartbeat(@PathVariable String id, @RequestBody HeartbeatRequest request) {
+        NodeEntity node = nodeRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("Node not found: " + id));
+
+        node.setStatus(NodeEntity.NodeStatus.HEALTHY);
+        node.setLastHeartbeat(Instant.now());
+        node.setAvailableStorage(request.freeStorage());
+
+        return nodeRepository.save(node);
+    }
+
     @GetMapping
-public List<NodeEntity> listNodes() {
+    public List<NodeEntity> listNodes() {
         return nodeRepository.findAll();
     }
 }
