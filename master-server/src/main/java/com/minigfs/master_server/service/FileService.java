@@ -7,8 +7,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.*;
 
 @Service
@@ -37,14 +40,12 @@ public class FileService {
     }
 
     public FileEntity uploadFile(MultipartFile multipartFile) throws IOException {
-        // 1. Create the file metadata record
         FileEntity file = new FileEntity();
         file.setName(multipartFile.getOriginalFilename());
         file.setSize(multipartFile.getSize());
         file.setChunkSize(chunkSize);
         file = fileRepository.save(file);
 
-        // 2. Get healthy nodes to distribute chunks across
         List<NodeEntity> healthyNodes = nodeRepository.findAll().stream()
                 .filter(n -> n.getStatus() == NodeEntity.NodeStatus.HEALTHY)
                 .toList();
@@ -53,7 +54,6 @@ public class FileService {
             throw new IllegalStateException("No healthy nodes available to store chunks");
         }
 
-        // 3. Read the file in chunkSize-sized pieces
         int chunkNumber = 0;
         try (InputStream inputStream = multipartFile.getInputStream()) {
             byte[] buffer = new byte[(int) chunkSize];
@@ -62,8 +62,6 @@ public class FileService {
             while ((bytesRead = inputStream.readNBytes(buffer, 0, buffer.length)) > 0) {
                 byte[] chunkData = Arrays.copyOf(buffer, bytesRead);
 
-                // naive placement: round-robin through healthy nodes, wrapping around
-                // TODO: improve with capacity-aware placement later
                 List<NodeEntity> targetNodes = pickNodesForChunk(healthyNodes, chunkNumber);
 
                 ChunkEntity chunk = new ChunkEntity();
@@ -87,6 +85,67 @@ public class FileService {
         }
 
         return file;
+    }
+
+    public byte[] downloadFile(UUID fileId) throws NoSuchAlgorithmException {
+        FileEntity file = fileRepository.findById(fileId)
+                .orElseThrow(() -> new NoSuchElementException("File not found: " + fileId));
+
+        List<ChunkEntity> chunks = chunkRepository.findAll().stream()
+                .filter(c -> c.getFile().getId().equals(fileId))
+                .sorted(Comparator.comparingInt(ChunkEntity::getChunkNumber))
+                .toList();
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+
+        for (ChunkEntity chunk : chunks) {
+            List<ChunkLocationEntity> locations = chunkLocationRepository.findAll().stream()
+                    .filter(loc -> loc.getChunk().getId().equals(chunk.getId()))
+                    .toList();
+
+            byte[] chunkData = fetchChunkFromAnyReplica(file.getId(), chunk, locations);
+            output.writeBytes(chunkData);
+        }
+
+        return output.toByteArray();
+    }
+
+    private byte[] fetchChunkFromAnyReplica(UUID fileId, ChunkEntity chunk, List<ChunkLocationEntity> locations) throws NoSuchAlgorithmException {
+        String chunkId = fileId + "-chunk-" + chunk.getChunkNumber();
+
+        for (ChunkLocationEntity location : locations) {
+            NodeEntity node = location.getNode();
+            if (node.getStatus() != NodeEntity.NodeStatus.HEALTHY) {
+                continue; // skip dead replicas, try the next one
+            }
+
+            try {
+                String url = "http://" + node.getHost() + ":" + node.getPort() + "/chunks/" + chunkId;
+                byte[] data = restTemplate.getForObject(url, byte[].class);
+
+                if (data != null && verifyChecksum(data, chunk.getChecksum())) {
+                    return data;
+                } else {
+                    System.err.println("[FileService] Checksum mismatch for chunk " + chunkId
+                            + " on " + node.getId() + ", trying next replica");
+                }
+            } catch (Exception e) {
+                System.err.println("[FileService] Failed to fetch chunk " + chunkId
+                        + " from " + node.getId() + ": " + e.getMessage() + ", trying next replica");
+            }
+        }
+
+        throw new RuntimeException("Could not retrieve chunk " + chunkId + " from any healthy replica");
+    }
+
+    private boolean verifyChecksum(byte[] data, String expectedChecksum) throws NoSuchAlgorithmException {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        byte[] hash = digest.digest(data);
+        StringBuilder hex = new StringBuilder();
+        for (byte b : hash) {
+            hex.append(String.format("%02x", b));
+        }
+        return hex.toString().equals(expectedChecksum);
     }
 
     private List<NodeEntity> pickNodesForChunk(List<NodeEntity> healthyNodes, int chunkNumber) {
