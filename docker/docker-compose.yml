@@ -11,5 +11,69 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
+  master-server:
+    build: ../master-server
+    container_name: mini-gfs-master
+    depends_on:
+      - postgres
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/minigfs
+      SPRING_DATASOURCE_USERNAME: minigfs
+      SPRING_DATASOURCE_PASSWORD: minigfs
+    ports:
+      - "8080:8080"
+
+  chunk-server-a:
+    build: ../chunk-server
+    container_name: mini-gfs-chunk-a
+    depends_on:
+      - master-server
+    environment:
+      NODE_ID: node-A
+      MASTER_URL: http://master-server:8080
+    ports:
+      - "8081:8081"
+    volumes:
+      - chunk-a-storage:/app/storage
+
+  chunk-server-b:
+    build: ../chunk-server
+    container_name: mini-gfs-chunk-b
+    depends_on:
+      - master-server
+    environment:
+      NODE_ID: node-B
+      SERVER_PORT: 8081
+      MASTER_URL: http://master-server:8080
+    ports:
+      - "8082:8081"
+    volumes:
+      - chunk-b-storage:/app/storage
+
+  chunk-server-c:
+    build: ../chunk-server
+    container_name: mini-gfs-chunk-c
+    depends_on:
+      - master-server
+    environment:
+      NODE_ID: node-C
+      SERVER_PORT: 8081
+      MASTER_URL: http://master-server:8080
+    ports:
+      - "8083:8081"
+    volumes:
+      - chunk-c-storage:/app/storage
+
+  dashboard:
+    build: ../dashboard
+    container_name: mini-gfs-dashboard
+    depends_on:
+      - master-server
+    ports:
+      - "3000:80"
+
 volumes:
   pgdata:
+  chunk-a-storage:
+  chunk-b-storage:
+  chunk-c-storage:
